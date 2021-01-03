@@ -87,6 +87,10 @@ else version = HaveNoTLS;
 HTTPListener listenHTTP(Settings)(Settings _settings, HTTPServerRequestDelegate request_handler)
 @safe
 if (is(Settings == string) || is(Settings == HTTPServerSettings)) {
+	import std.stdio: writeln;
+
+	writeln("Shamelessly adding a writln here. No regrets.");
+
 	// auto-construct HTTPServerSettings
 	static if (is(Settings == string))
 		auto settings = new HTTPServerSettings(_settings);
