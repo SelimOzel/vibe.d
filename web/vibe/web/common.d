@@ -1,7 +1,7 @@
 /**
 	Contains common functionality for the REST and WEB interface generators.
 
-	Copyright: © 2012-2017 RejectedSoftware e.K.
+	Copyright: © 2012-2017 Sönke Ludwig
 	License: Subject to the terms of the MIT license, as written in the included LICENSE.txt file.
 	Authors: Sönke Ludwig, Михаил Страшун
 */
@@ -10,10 +10,12 @@ module vibe.web.common;
 import vibe.http.common;
 import vibe.http.server : HTTPServerRequest;
 import vibe.data.json;
-import vibe.internal.meta.uda : onlyAsUda;
+import vibe.internal.meta.uda : onlyAsUda, UDATuple;
 
+import std.meta : AliasSeq;
 static import std.utf;
 static import std.string;
+import std.traits : getUDAs, ReturnType;
 import std.typecons : Nullable;
 
 
@@ -30,6 +32,39 @@ string adjustMethodStyle(string name, MethodStyle style)
 	}
 
 	import std.uni;
+
+	string separate(char separator, bool upper_case)
+	{
+		string ret;
+		size_t start = 0, i = 0;
+		while (i < name.length) {
+			// skip acronyms
+			while (i < name.length && (i+1 >= name.length || (name[i+1] >= 'A' && name[i+1] <= 'Z'))) {
+				std.utf.decode(name, i);
+			}
+
+			// skip the main (lowercase) part of a word
+			while (i < name.length && !(name[i] >= 'A' && name[i] <= 'Z')) {
+				std.utf.decode(name, i);
+			}
+
+			// add a single word
+			if( ret.length > 0 ) {
+				ret ~= separator;
+			}
+			ret ~= name[start .. i];
+
+			// quick skip the capital and remember the start of the next word
+			start = i;
+			if (i < name.length) {
+				std.utf.decode(name, i);
+			}
+		}
+		if (start < name.length) {
+			ret ~= separator ~ name[start .. $];
+		}
+		return upper_case ? std.string.toUpper(ret) : std.string.toLower(ret);
+	}
 
 	final switch(style) {
 		case MethodStyle.unaltered:
@@ -62,42 +97,14 @@ string adjustMethodStyle(string name, MethodStyle style)
 			return std.string.toLower(name);
 		case MethodStyle.upperCase:
 			return std.string.toUpper(name);
-		case MethodStyle.lowerUnderscored:
-		case MethodStyle.upperUnderscored:
-			string ret;
-			size_t start = 0, i = 0;
-			while (i < name.length) {
-				// skip acronyms
-				while (i < name.length && (i+1 >= name.length || (name[i+1] >= 'A' && name[i+1] <= 'Z'))) {
-					std.utf.decode(name, i);
-				}
-
-				// skip the main (lowercase) part of a word
-				while (i < name.length && !(name[i] >= 'A' && name[i] <= 'Z')) {
-					std.utf.decode(name, i);
-				}
-
-				// add a single word
-				if( ret.length > 0 ) {
-					ret ~= "_";
-				}
-				ret ~= name[start .. i];
-
-				// quick skip the capital and remember the start of the next word
-				start = i;
-				if (i < name.length) {
-					std.utf.decode(name, i);
-				}
-			}
-			if (start < name.length) {
-				ret ~= "_" ~ name[start .. $];
-			}
-			return style == MethodStyle.lowerUnderscored ?
-				std.string.toLower(ret) : std.string.toUpper(ret);
+		case MethodStyle.lowerUnderscored: return separate('_', false);
+		case MethodStyle.upperUnderscored: return separate('_', true);
+		case MethodStyle.lowerDashed: return separate('-', false);
+		case MethodStyle.upperDashed: return separate('-', true);
 	}
 }
 
-@safe unittest
+unittest
 {
 	assert(adjustMethodStyle("methodNameTest", MethodStyle.unaltered) == "methodNameTest");
 	assert(adjustMethodStyle("methodNameTest", MethodStyle.camelCase) == "methodNameTest");
@@ -113,6 +120,8 @@ string adjustMethodStyle(string name, MethodStyle style)
 	assert(adjustMethodStyle("MethodNameTest", MethodStyle.upperCase) == "METHODNAMETEST");
 	assert(adjustMethodStyle("MethodNameTest", MethodStyle.lowerUnderscored) == "method_name_test");
 	assert(adjustMethodStyle("MethodNameTest", MethodStyle.upperUnderscored) == "METHOD_NAME_TEST");
+	assert(adjustMethodStyle("MethodNameTest", MethodStyle.lowerDashed) == "method-name-test");
+	assert(adjustMethodStyle("MethodNameTest", MethodStyle.upperDashed) == "METHOD-NAME-TEST");
 	assert(adjustMethodStyle("Q", MethodStyle.lowerUnderscored) == "q");
 	assert(adjustMethodStyle("getHTML", MethodStyle.lowerUnderscored) == "get_html");
 	assert(adjustMethodStyle("getHTMLEntity", MethodStyle.lowerUnderscored) == "get_html_entity");
@@ -439,10 +448,18 @@ class RestException : HTTPStatusException {
 		Json m_jsonResult;
 	}
 
-	@safe:
+    ///
+	this (int status, string result, string file = __FILE__, int line = __LINE__,
+		Throwable next = null) @safe
+	{
+		Json jsonResult = Json.emptyObject;
+		jsonResult["message"] = result;
+		this(status, jsonResult, file, line);
+	}
 
 	///
-	this(int status, Json jsonResult, string file = __FILE__, int line = __LINE__, Throwable next = null)
+	this (int status, Json jsonResult, string file = __FILE__, int line = __LINE__,
+		Throwable next = null) @safe
 	{
 		if (jsonResult.type == Json.Type.Object && jsonResult["statusMessage"].type == Json.Type.String) {
 			super(status, jsonResult["statusMessage"].get!string, file, line, next);
@@ -454,8 +471,11 @@ class RestException : HTTPStatusException {
 		m_jsonResult = jsonResult;
 	}
 
-	/// The HTTP status code
-	@property const(Json) jsonResult() const { return m_jsonResult; }
+	/// The result text reported to the client
+	@property inout(Json) jsonResult () inout nothrow pure @safe @nogc
+	{
+		return m_jsonResult;
+	}
 }
 
 /// private
@@ -470,6 +490,97 @@ package struct MethodAttribute
 {
 	HTTPMethod data;
 	alias data this;
+}
+
+
+/** UDA for using a custom serializer for the method return value.
+
+	Instead of using the default serializer (JSON), this allows to define
+	custom serializers. Multiple serializers can be specified and will be
+	matched against the `Accept` header of the HTTP request.
+
+	Params:
+		serialize = An alias to a generic function taking an output range as
+			its first argument and the value to be serialized as its second
+			argument. The result of the serialization is written byte-wise into
+			the output range.
+		deserialize = An alias to a generic function taking a forward range
+			as its first argument and a reference to the value that is to be
+			deserialized.
+		content_type = The MIME type of the serialized representation.
+*/
+alias resultSerializer(alias serialize, alias deserialize, string content_type)
+	= ResultSerializer!(serialize, deserialize, content_type);
+
+///
+unittest {
+	import std.bitmanip : bigEndianToNative, nativeToBigEndian;
+
+	interface MyRestInterface {
+		static struct Point {
+			int x, y;
+		}
+
+		static void serialize(R, T)(ref R output_range, const ref T value)
+		{
+			static assert(is(T == Point)); // only Point supported in this example
+			output_range.put(nativeToBigEndian(value.x));
+			output_range.put(nativeToBigEndian(value.y));
+		}
+
+		static T deserialize(T, R)(R input_range)
+		{
+			static assert(is(T == Point)); // only Point supported in this example
+			T ret;
+			ubyte[4] xbuf, ybuf;
+			input_range.takeExactly(4).copy(xbuf[]);
+			input_range.takeExactly(4).copy(ybuf[]);
+			ret.x = bigEndianToNative!int(xbuf);
+			ret.y = bigEndianToNative!int(ybuf);
+			return ret;
+		}
+
+		// serialize as binary data in network byte order
+		@resultSerializer!(serialize, deserialize, "application/binary")
+		Point getPoint();
+	}
+}
+
+/// private
+struct ResultSerializer(alias ST, alias DT, string ContentType) {
+	enum contentType = ContentType;
+	alias serialize = ST;
+	alias deserialize = DT;
+}
+
+
+package void defaultSerialize(T, R)(ref R output_range, in ref T value)
+{
+	static struct R {
+		typeof(output_range) underlying;
+		void put(char ch) { underlying.put(ch); }
+		void put(const(char)[] ch) { underlying.put(cast(const(ubyte)[])ch); }
+	}
+	auto dst = R(output_range);
+	serializeToJson(dst, value);
+}
+
+package T defaultDeserialize(T, R)(R input_range)
+{
+	return deserializeJson!T(std.string.assumeUTF(input_range));
+}
+
+package alias DefaultSerializerT = ResultSerializer!(
+	defaultSerialize, defaultDeserialize, "application/json");
+
+
+/// Convenience template to get all the ResultSerializers for a function
+package template ResultSerializersT(alias func) {
+	alias DefinedSerializers = getUDAs!(func, ResultSerializer);
+	static if (getUDAs!(func, ResultSerializer).length)
+		alias ResultSerializersT = DefinedSerializers;
+	else
+		alias ResultSerializersT = AliasSeq!(DefaultSerializerT);
 }
 
 /**
@@ -523,7 +634,7 @@ WebParamAttribute bodyParam(string identifier, string field) @safe
 in {
 	assert(field.length > 0, "fieldname can't be empty.");
 }
-body
+do
 {
 	import vibe.web.internal.rest.common : ParameterKind;
 	if (!__ctfe)
@@ -609,6 +720,10 @@ enum MethodStyle
 	lowerUnderscored,
 	/// UPPER_CASE_NAMING
 	upperUnderscored,
+	/// lower-case-naming
+	lowerDashed,
+	/// UPPER-CASE-NAMING
+	upperDashed,
 
 	/// deprecated
 	Unaltered = unaltered,
@@ -725,10 +840,10 @@ package ParamResult readFormParamRec(T)(scope HTTPServerRequest req, ref T dst, 
 		alias EL = typeof(T.init[0]);
 		enum isSimpleElement = !(isDynamicArray!EL && !isSomeString!(OriginalType!EL)) &&
 			!isStaticArray!EL &&
-			!(is(T == struct) &&
-					!is(typeof(T.fromString(string.init))) &&
-					!is(typeof(T.fromStringValidate(string.init, null))) &&
-					!is(typeof(T.fromISOExtString(string.init))));
+			!(is(EL == struct) &&
+					!is(typeof(EL.fromString(string.init))) &&
+					!is(typeof(EL.fromStringValidate(string.init, null))) &&
+					!is(typeof(EL.fromISOExtString(string.init))));
 
 		static if (isStaticArray!T)
 		{
@@ -867,7 +982,7 @@ package ParamResult readFormParamRec(T)(scope HTTPServerRequest req, ref T dst, 
 			if (notSeen != -1)
 			{
 				err.field = style.getArrayFieldName(fieldname, notSeen);
-				err.text = "Missing form field.";
+				err.text = "Missing array form field entry.";
 				return ParamResult.error;
 			}
 		}
@@ -958,6 +1073,30 @@ unittest {
 	assert(arr.length == 0);
 }
 
+unittest { // complex array parameters
+	import vibe.http.server;
+	import vibe.inet.url;
+
+	static struct S {
+		int a, b;
+	}
+
+	S[] arr;
+	ParamError err;
+
+	// d style
+	auto req = createTestHTTPServerRequest(URL("http://localhost/route?arr[0].a=1&arr[0].b=2"));
+	auto result = req.readFormParamRec(arr, "arr", false, NestedNameStyle.d, err);
+	assert(result == ParamResult.ok);
+	assert(arr == [S(1, 2)]);
+
+	// underscore style
+	req = createTestHTTPServerRequest(URL("http://localhost/route?arr_0_a=1&arr_0_b=2"));
+	result = req.readFormParamRec(arr, "arr", false, NestedNameStyle.underscore, err);
+	assert(result == ParamResult.ok);
+	assert(arr == [S(1, 2)]);
+}
+
 package bool webConvTo(T)(string str, ref T dst, ref ParamError err)
 nothrow {
 	import std.conv;
@@ -967,7 +1106,7 @@ nothrow {
 			static assert(is(typeof(T.fromStringValidate(str, &err.text)) == Nullable!T));
 			auto res = T.fromStringValidate(str, &err.text);
 			if (res.isNull()) return false;
-			dst.setVoid(res);
+			dst.setVoid(res.get);
 		} else static if (is(typeof(T.fromString(str)))) {
 			static assert(is(typeof(T.fromString(str)) == T));
 			dst.setVoid(T.fromString(str));

@@ -1,7 +1,7 @@
 /**
 	A simple HTTP/1.1 client implementation.
 
-	Copyright: © 2012-2014 RejectedSoftware e.K.
+	Copyright: © 2012-2014 Sönke Ludwig
 	License: Subject to the terms of the MIT license, as written in the included LICENSE.txt file.
 	Authors: Sönke Ludwig, Jan Krüger
 */
@@ -294,7 +294,7 @@ unittest {
 		},
 		(scope res){
 			logInfo("Headers:");
-			foreach(key, ref value; res.headers) {
+			foreach (key, ref value; res.headers.byKeyValue) {
 				logInfo("%s: %s", key, value);
 			}
 			logInfo("Response: %s", res.bodyReader.readAllUTF8());
@@ -539,6 +539,11 @@ final class HTTPClient {
 		else
 			scope request_allocator = new RegionListAllocator!(shared(GCAllocator), true)(1024, GCAllocator.instance);
 
+		scope (failure) {
+			m_responding = false;
+			disconnect();
+		}
+
 		bool close_conn;
 		SysTime connected_time;
 		bool has_body = doRequestWithRetry(requester, false, close_conn, connected_time);
@@ -552,15 +557,20 @@ final class HTTPClient {
 		}
 
 		Exception user_exception;
+		while (true)
 		{
-			scope (failure) {
-				m_responding = false;
-				disconnect();
-			}
 			try responder(res);
 			catch (Exception e) {
 				logDebug("Error while handling response: %s", e.toString().sanitize());
 				user_exception = e;
+			}
+			if (res.statusCode < 200) {
+				// just an informational status -> read and handle next response
+				if (m_responding) res.dropBody();
+				if (m_conn) {
+					res = scoped!HTTPClientResponse(this, has_body, close_conn, request_allocator, connected_time);
+					continue;
+				}
 			}
 			if (m_responding) {
 				logDebug("Failed to handle the complete response of the server - disconnecting.");
@@ -570,6 +580,7 @@ final class HTTPClient {
 
 			if (user_exception || res.headers.get("Connection") == "close")
 				disconnect();
+			break;
 		}
 		if (user_exception) throw user_exception;
 	}
@@ -579,6 +590,10 @@ final class HTTPClient {
 	{
 		bool close_conn;
 		SysTime connected_time;
+		scope (failure) {
+			m_responding = false;
+			disconnect();
+		}
 		bool has_body = doRequestWithRetry(requester, false, close_conn, connected_time);
 		m_responding = true;
 		auto res = new HTTPClientResponse(this, has_body, close_conn, () @trusted { return vibeThreadAllocator(); } (), connected_time);
@@ -611,8 +626,6 @@ final class HTTPClient {
 
 			logTrace("HTTP client waiting for response");
 			if (!m_stream.empty) break;
-
-			enforce(i != 1, "Second attempt to send HTTP request failed.");
 		}
 		return has_body;
 	}
@@ -625,11 +638,9 @@ final class HTTPClient {
 		m_requesting = true;
 		scope(exit) m_requesting = false;
 
-		if (!m_conn || !m_conn.connected) {
-			if (m_conn) {
-				m_conn.close(); // make sure all resources are freed
-				m_conn = TCPConnection.init;
-			}
+		if (!m_conn || !m_conn.connected || m_conn.waitForDataEx(0.seconds) == WaitForDataStatus.noMoreData) {
+			if (m_conn)
+				disconnect(); // make sure all resources are freed
 
 			if (m_settings.proxyURL.host !is null){
 
@@ -668,7 +679,8 @@ final class HTTPClient {
 					use_dns = true;
 				}
 
-				NetworkAddress proxyAddr = resolveHost(m_settings.proxyURL.host, m_settings.dnsAddressFamily, use_dns);
+				NetworkAddress proxyAddr = resolveHost(m_settings.proxyURL.host, m_settings.dnsAddressFamily, use_dns,
+					m_settings.connectTimeout);
 				proxyAddr.port = m_settings.proxyURL.port;
 				m_conn = connectTCPWithTimeout(proxyAddr, m_settings.networkInterface, m_settings.connectTimeout);
 			}
@@ -690,13 +702,13 @@ final class HTTPClient {
 						() @trusted { strcpy(cast(char*)s.sun_path.ptr,m_server.toStringz()); } ();
 					} else
 					{
-						addr = resolveHost(m_server, m_settings.dnsAddressFamily);
+						addr = resolveHost(m_server, m_settings.dnsAddressFamily, true, m_settings.connectTimeout);
 						addr.port = m_port;
 					}
 					m_conn = connectTCPWithTimeout(addr, m_settings.networkInterface, m_settings.connectTimeout);
 				} else
 				{
-					auto addr = resolveHost(m_server, m_settings.dnsAddressFamily);
+					auto addr = resolveHost(m_server, m_settings.dnsAddressFamily, true, m_settings.connectTimeout);
 					addr.port = m_port;
 					m_conn = connectTCPWithTimeout(addr, m_settings.networkInterface, m_settings.connectTimeout);
 				}

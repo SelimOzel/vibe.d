@@ -1,7 +1,7 @@
 /**
 	Internal hash map implementation.
 
-	Copyright: © 2013 RejectedSoftware e.K.
+	Copyright: © 2013 Sönke Ludwig
 	License: Subject to the terms of the MIT license, as written in the included LICENSE.txt file.
 	Authors: Sönke Ludwig
 */
@@ -24,7 +24,8 @@ struct DefaultHashMapTraits(Key) {
 			return () @trusted { return a is b ? true : (a !is null && (cast(Object) a).opEquals(cast(Object) b)); }();
 		else return a == b;
 	}
-	static size_t hashOf(in ref Key k)
+
+	static size_t hashOf(const scope ref Key k)
 	@safe {
 		static if (__traits(isFinalClass, Key) && &Unqual!Key.init.toHash is &Object.init.toHash)
 			return () @trusted { return cast(size_t)cast(void*)k; } ();
@@ -39,11 +40,11 @@ struct DefaultHashMapTraits(Key) {
 		else {
 			// evil casts to be able to get the most basic operations of
 			// HashMap nothrow and @nogc
-			static size_t hashWrapper(in ref Key k) {
+			static size_t hashWrapper(const scope ref Key k) {
 				static typeinfo = typeid(Key);
 				return typeinfo.getHash(&k);
 			}
-			static @nogc nothrow size_t properlyTypedWrapper(in ref Key k) { return 0; }
+			static @nogc nothrow size_t properlyTypedWrapper(const scope ref Key k) { return 0; }
 			return () @trusted { return (cast(typeof(&properlyTypedWrapper))&hashWrapper)(k); } ();
 		}
 	}
@@ -97,7 +98,9 @@ struct HashMap(TKey, TValue, Traits = DefaultHashMapTraits!TKey, Allocator = IAl
 		{
 			import std.algorithm.mutation : move;
 			this.key = cast(UnConst!Key)key;
-			this.value = value.move;
+			static if (is(typeof(value.move)))
+				this.value = value.move;
+			else this.value = value;
 		}
 	}
 	private {
@@ -161,7 +164,9 @@ struct HashMap(TKey, TValue, Traits = DefaultHashMapTraits!TKey, Allocator = IAl
 				}
 				r = Traits.hashOf(m_table[i].key) & (m_table.length-1);
 			} while ((j<r && r<=i) || (i<j && j<r) || (r<=i && i<j));
-			m_table[j] = m_table[i].move;
+			static if (is(typeof(m_table[i].move)))
+				m_table[j] = m_table[i].move;
+			else m_table[j] = m_table[i];
 		}
 	}
 
@@ -359,7 +364,7 @@ struct HashMap(TKey, TValue, Traits = DefaultHashMapTraits!TKey, Allocator = IAl
 	}
 }
 
-unittest {
+nothrow unittest {
 	import std.conv;
 
 	HashMap!(string, string) map;

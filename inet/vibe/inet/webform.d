@@ -1,7 +1,7 @@
 /**
 	Contains HTML/urlencoded form parsing and construction routines.
 
-	Copyright: © 2012-2014 RejectedSoftware e.K.
+	Copyright: © 2012-2014 Sönke Ludwig
 	License: Subject to the terms of the MIT license, as written in the included LICENSE.txt file.
 	Authors: Sönke Ludwig, Jan Krüger
 */
@@ -386,6 +386,12 @@ string formEncode(T)(T map, char sep = '&')
 	return formEncodeImpl(map, sep, true);
 }
 
+/// Ditto
+string formEncode(T : DictionaryList!Args, Args...)(T map, char sep = '&')
+{
+	return formEncodeImpl(map.byKeyValue(), sep, true);
+}
+
 /**
 	Writes to the $(D OutputRange) an URL encoded string as specified in RFC 3986 section 2
 
@@ -410,6 +416,12 @@ string urlEncode(T)(T map)
 	if (isFormMap!T)
 {
 	return formEncodeImpl(map, '&', false);
+}
+
+/// Ditto
+string urlEncode(T : DictionaryList!Args, Args...)(T map)
+{
+	return formEncodeImpl(map.byKeyValue, '&', false);
 }
 
 /**

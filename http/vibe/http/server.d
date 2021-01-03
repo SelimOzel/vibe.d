@@ -1,7 +1,7 @@
 /**
 	A HTTP 1.1/1.0 server implementation.
 
-	Copyright: © 2012-2017 RejectedSoftware e.K.
+	Copyright: © 2012-2017 Sönke Ludwig
 	License: Subject to the terms of the MIT license, as written in the included LICENSE.txt file.
 	Authors: Sönke Ludwig, Jan Krüger, Ilya Shipunov
 */
@@ -465,8 +465,18 @@ HTTPServerRequest createTestHTTPServerRequest(URL url, HTTPMethod method, InetHe
 
 /**
 	Creates a HTTPServerResponse suitable for writing unit tests.
+
+	Params:
+		data_sink = Optional output stream that captures the data that gets
+			written to the response
+		session_store = Optional session store to use when sessions are involved
+		data_mode = If set to `TestHTTPResponseMode.bodyOnly`, only the body
+			contents get written to `data_sink`. Otherwise the raw response
+			including the HTTP header is written.
 */
-HTTPServerResponse createTestHTTPServerResponse(OutputStream data_sink = null, SessionStore session_store = null)
+HTTPServerResponse createTestHTTPServerResponse(OutputStream data_sink = null,
+	SessionStore session_store = null,
+	TestHTTPResponseMode data_mode = TestHTTPResponseMode.plain)
 @safe {
 	import vibe.stream.wrapper;
 
@@ -475,9 +485,15 @@ HTTPServerResponse createTestHTTPServerResponse(OutputStream data_sink = null, S
 		settings = new HTTPServerSettings;
 		settings.sessionStore = session_store;
 	}
-	if (!data_sink) data_sink = new NullOutputStream;
-	auto stream = createProxyStream(Stream.init, data_sink);
-	auto ret = new HTTPServerResponse(stream, null, settings, () @trusted { return vibeThreadAllocator(); } ());
+
+	InterfaceProxy!Stream outstr;
+	if (data_sink && data_mode == TestHTTPResponseMode.plain)
+		outstr = createProxyStream(Stream.init, data_sink);
+	else outstr = createProxyStream(Stream.init, nullSink);
+
+	auto ret = new HTTPServerResponse(outstr, InterfaceProxy!ConnectionStream.init,
+		settings, () @trusted { return vibeThreadAllocator(); } ());
+	if (data_sink && data_mode == TestHTTPResponseMode.bodyOnly) ret.m_bodyWriter = data_sink;
 	return ret;
 }
 
@@ -527,6 +543,12 @@ final class HTTPServerErrorInfo {
 alias HTTPServerErrorPageHandler = void delegate(HTTPServerRequest req, HTTPServerResponse res, HTTPServerErrorInfo error) @safe;
 
 
+enum TestHTTPResponseMode {
+	plain,
+	bodyOnly
+}
+
+
 private enum HTTPServerOptionImpl {
 	none                      = 0,
 	errorStackTraces          = 1<<7,
@@ -548,34 +570,6 @@ private enum HTTPServerOptionImpl {
 */
 struct HTTPServerOption {
 	static enum none                      = HTTPServerOptionImpl.none;
-	deprecated("This is done lazily. It will be removed in 0.9.")
-	static enum parseURL                  = none;
-	deprecated("This is done lazily. It will be removed in 0.9.")
-	static enum parseQueryString          = none;
-	deprecated("This is done lazily. It will be removed in 0.9.")
-	static enum parseFormBody             = none;
-	deprecated("This is done lazily. It will be removed in 0.9.")
-	static enum parseJsonBody             = none;
-	deprecated("This is done lazily. It will be removed in 0.9.")
-	static enum parseMultiPartBody        = none;
-	/** Deprecated: Distributes request processing among worker threads
-
-		Note that this functionality assumes that the request handler
-		is implemented in a thread-safe way. However, the D type system
-		is bypassed, so that no static verification takes place.
-
-		For this reason, it is recommended to instead use
-		`vibe.core.core.runWorkerTaskDist` and call `listenHTTP`
-		from each task/thread individually. If the `reusePort` option
-		is set, then all threads will be able to listen on the same port,
-		with the operating system distributing the incoming connections.
-
-		If possible, instead of threads, the use of separate processes
-		is more robust and often faster. The `reusePort` option works
-		the same way in this scenario.
-	*/
-	deprecated("Use runWorkerTaskDist or start threads separately. It will be removed in 0.9.")
-	static enum distribute                = HTTPServerOptionImpl.distribute;
 	/** Enables stack traces (`HTTPServerErrorInfo.debugMessage`).
 
 		Note that generating the stack traces are generally a costly
@@ -603,18 +597,6 @@ struct HTTPServerOption {
 
 	deprecated("None has been renamed to none.")
 	static enum None = none;
-	deprecated("This is done lazily. It will be removed in 0.9.")
-	static enum ParseURL = none;
-	deprecated("This is done lazily. It will be removed in 0.9.")
-	static enum ParseQueryString = none;
-	deprecated("This is done lazily. It will be removed in 0.9.")
-	static enum ParseFormBody = none;
-	deprecated("This is done lazily. It will be removed in 0.9.")
-	static enum ParseJsonBody = none;
-	deprecated("This is done lazily. It will be removed in 0.9.")
-	static enum ParseMultiPartBody = none;
-	deprecated("This is done lazily. It will be removed in 0.9.")
-	static enum ParseCookies = none;
 
 	HTTPServerOptionImpl x;
 	alias x this;
@@ -1432,6 +1414,7 @@ final class HTTPServerResponse : HTTPResponse {
 		if (m_bodyWriter) return m_bodyWriter;
 
 		assert(!m_headerWritten, "A void body was already written!");
+		assert(this.statusCode >= 200, "1xx responses can't have body");
 
 		if (m_isHeadResponse) {
 			// for HEAD requests, we define a NullOutputWriter for convenience
@@ -1538,6 +1521,7 @@ final class HTTPServerResponse : HTTPResponse {
 		if (protocol.length) headers["Upgrade"] = protocol;
 		writeVoidBody();
 		m_requiresConnectionClose = true;
+		m_headerWritten = true;
 		return createConnectionProxyStream(m_conn, m_rawConnection);
 	}
 	/// ditto
@@ -1547,6 +1531,7 @@ final class HTTPServerResponse : HTTPResponse {
 		if (protocol.length) headers["Upgrade"] = protocol;
 		writeVoidBody();
 		m_requiresConnectionClose = true;
+		m_headerWritten = true;
 		() @trusted {
 			auto conn = createConnectionProxyStreamFL(m_conn, m_rawConnection);
 			del(conn);
@@ -1717,7 +1702,10 @@ final class HTTPServerResponse : HTTPResponse {
 		import vibe.stream.wrapper;
 
 		assert(!m_bodyWriter && !m_headerWritten, "Try to write header after body has already begun.");
-		m_headerWritten = true;
+		assert(this.httpVersion != HTTPVersion.HTTP_1_0 || this.statusCode >= 200, "Informational status codes aren't supported by HTTP/1.0.");
+
+		// Don't set m_headerWritten for 1xx status codes
+		if (this.statusCode >= 200) m_headerWritten = true;
 		auto dst = streamOutputRange!1024(m_conn);
 
 		void writeLine(T...)(string fmt, T args)

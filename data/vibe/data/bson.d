@@ -1,7 +1,7 @@
 /**
 	BSON serialization and value handling.
 
-	Copyright: © 2012-2015 RejectedSoftware e.K.
+	Copyright: © 2012-2015 Sönke Ludwig
 	License: Subject to the terms of the MIT license, as written in the included LICENSE.txt file.
 	Authors: Sönke Ludwig
 */
@@ -131,11 +131,26 @@ struct Bson {
 		MaxKey = maxKey           /// Compatibility alias - will be deprecated soon.
 	}
 
+	// length + 0 byte end for empty lists (map, array)
+	private static immutable ubyte[] emptyListBytes = [5, 0, 0, 0, 0];
+
 	/// Returns a new, empty Bson value of type Object.
-	static @property Bson emptyObject() { return Bson(cast(Bson[string])null); }
+	static @property Bson emptyObject()
+	{
+		Bson ret;
+		ret.m_type = Type.object;
+		ret.m_data = emptyListBytes;
+		return ret;
+	}
 
 	/// Returns a new, empty Bson value of type Array.
-	static @property Bson emptyArray() { return Bson(cast(Bson[])null); }
+	static @property Bson emptyArray()
+	{
+		Bson ret;
+		ret.m_type = Type.array;
+		ret.m_data = emptyListBytes;
+		return ret;
+	}
 
 	private {
 		Type m_type = Type.undefined;
@@ -223,7 +238,7 @@ struct Bson {
 	/**
 		Assigns a D type to a BSON value.
 	*/
-	void opAssign(in Bson other)
+	void opAssign(const Bson other)
 	{
 		m_data = other.m_data;
 		m_type = other.m_type;
@@ -423,6 +438,11 @@ struct Bson {
 		else static if( is(T == BsonObjectID) ){ checkType(Type.objectID); return BsonObjectID(m_data[0 .. 12]); }
 		else static if( is(T == bool) ){ checkType(Type.bool_); return m_data[0] != 0; }
 		else static if( is(T == BsonDate) ){ checkType(Type.date); return BsonDate(fromBsonData!long(m_data)); }
+		else static if( is(T == SysTime) ){
+			checkType(Type.date);
+			string data = cast(string)m_data[4 .. 4+fromBsonData!int(m_data)-1];
+			return SysTime.fromISOString(data);
+		}
 		else static if( is(T == BsonRegex) ){
 			checkType(Type.regex);
 			auto d = m_data[0 .. $];
@@ -443,6 +463,10 @@ struct Bson {
 			enforce(bbd.type == BsonBinData.Type.uuid, "BsonBinData value is type '"~to!string(bbd.type)~"', expected to be uuid");
 			const ubyte[16] b = bbd.rawData;
 			return UUID(b);
+		}
+		else static if( is(T == SysTime) ) {
+			checkType(Type.date);
+			return BsonDate(fromBsonData!long(m_data)).toSysTime();
 		}
 		else static assert(false, "Cannot cast "~typeof(this).stringof~" to '"~T.stringof~"'.");
 	}
@@ -558,6 +582,9 @@ struct Bson {
 	}
 	/// ditto
 	void opIndexAssign(T)(in T value, string idx){
+		// WARNING: it is ABSOLUTELY ESSENTIAL that ordering is not changed!!!
+		// MongoDB depends on ordering of the Bson maps.
+
 		auto newcont = appender!bdata_t();
 		checkType(Type.object);
 		auto d = m_data[4 .. $];

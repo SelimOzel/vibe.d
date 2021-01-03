@@ -9,7 +9,7 @@
 
 	See $(D registerWebInterface) for an overview of how the system works.
 
-	Copyright: © 2013-2016 RejectedSoftware e.K.
+	Copyright: © 2013-2016 Sönke Ludwig
 	License: Subject to the terms of the MIT license, as written in the included LICENSE.txt file.
 	Authors: Sönke Ludwig
 */
@@ -183,7 +183,14 @@ URLRouter registerWebInterface(C : Object, MethodStyle method_style = MethodStyl
 		/*static if (isInstanceOf!(SessionVar, __traits(getMember, instance, M))) {
 			__traits(getMember, instance, M).m_getContext = toDelegate({ return s_requestContext; });
 		}*/
-		static if (!is(typeof(__traits(getMember, Object, M)))) { // exclude Object's default methods and field
+
+		// Ignore special members, such as ctor, dtors, postblit, and opAssign,
+		// and object default methods and fields.
+		// See https://github.com/vibe-d/vibe.d/issues/2438
+		static if (M != "__ctor" && M != "__dtor" && M != "__xdtor" &&
+				   M != "__postblit" && M != "__xpostblit" && M != "opAssign" &&
+				   !is(typeof(__traits(getMember, Object, M))))
+		{
 			foreach (overload; MemberFunctionsTuple!(C, M)) {
 				alias RT = ReturnType!overload;
 				enum minfo = extractHTTPMethodAndName!(overload, true)();
@@ -475,7 +482,7 @@ in
 {
 	assert(100 <= statusCode && statusCode < 600);
 }
-body
+do
 {
 	getRequestContext().res.statusCode = statusCode;
 }

@@ -1,7 +1,7 @@
 /**
 	Defines a string based multi-map with conserved insertion order.
 
-	Copyright: © 2012-2014 RejectedSoftware e.K.
+	Copyright: © 2012-2014 Sönke Ludwig
 	License: Subject to the terms of the MIT license, as written in the included LICENSE.txt file.
 	Authors: Sönke Ludwig
 */
@@ -290,10 +290,6 @@ struct DictionaryList(VALUE, bool case_sensitive = true, size_t NUM_STATIC_FIELD
 	/// ditto
 	auto byValue() inout { import std.algorithm.iteration : map; return byKeyValue().map!(p => p[1]); }
 
-	/// Deprecated in favor of `.byKeyValue` - enables foreach iteration over a `DictionaryList` with two loop variables.
-	deprecated("Iterate over .byKeyValue instead.")
-	alias byKeyValue this;
-
 	static if (is(typeof({ const(ValueType) v; ValueType w; w = v; }))) {
 		/** Duplicates the header map.
 		*/
@@ -346,6 +342,8 @@ struct DictionaryList(VALUE, bool case_sensitive = true, size_t NUM_STATIC_FIELD
 			DictionaryList* list;
 		}
 		size_t idx;
+
+		@property Rng save() { return this; }
 
 		@property bool empty() const { return idx >= list.length; }
 		@property ref KVT front() {
