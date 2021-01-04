@@ -88,7 +88,6 @@ HTTPListener listenHTTP(Settings)(Settings _settings, HTTPServerRequestDelegate 
 @safe
 if (is(Settings == string) || is(Settings == HTTPServerSettings)) {
 	import std.stdio: writeln;
-
 	writeln("What's up");
 
 	// auto-construct HTTPServerSettings
@@ -199,6 +198,9 @@ unittest
 */
 void handleHTTPConnection(TCPConnection connection, HTTPServerContext context)
 @safe {
+	import std.stdio: writeln;
+	writeln("handleHTTPConnection");
+	
 	InterfaceProxy!Stream http_stream;
 	http_stream = connection;
 
